@@ -1,4 +1,4 @@
-# Laravel Settings
+## Contents
 
 - [Introduction](#introduction)
 - [When To Use This Package](#when-to-use-this-package)
