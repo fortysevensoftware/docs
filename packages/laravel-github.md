@@ -1,25 +1,36 @@
+# Laravel GitHub Documentation
+
+Documentation for the upcoming **v1.0.4** release, following **v1.0.3**.
+
 ## Contents
 
 - [Introduction](#introduction)
+- [Changes in v1.0.4](#changes-in-v104)
 - [When To Use This Package](#when-to-use-this-package)
 - [Installation](#installation)
 - [GitHub App Setup](#github-app-setup)
-  - [Creating and Installing the App](#creating-and-installing-the-app)
-  - [Connecting Your Laravel Application](#connecting-your-laravel-application)
-  - [Checking Configuration](#checking-configuration)
+    - [Creating and Installing the App](#creating-and-installing-the-app)
+    - [Connecting Your Laravel Application](#connecting-your-laravel-application)
+    - [Checking Configuration](#checking-configuration)
 - [Configuration](#configuration)
 - [Repositories](#repositories)
 - [Pull Requests](#pull-requests)
-  - [Searching Pull Requests](#searching-pull-requests)
-  - [Finding a Pull Request by Number](#finding-a-pull-request-by-number)
-  - [Retrieving a Pull Request](#retrieving-a-pull-request)
-  - [Understanding Pull Request States](#understanding-pull-request-states)
+    - [Fluent Query API](#fluent-query-api)
+    - [Reusing Queries](#reusing-queries)
+    - [Listing Open Pull Requests](#listing-open-pull-requests)
+    - [Searching Pull Requests](#searching-pull-requests)
+    - [Finding a Pull Request by Number](#finding-a-pull-request-by-number)
+    - [Retrieving a Pull Request](#retrieving-a-pull-request)
+    - [Understanding Pull Request States](#understanding-pull-request-states)
 - [Dependency Injection](#dependency-injection)
 - [Authentication and Caching](#authentication-and-caching)
+- [Package Structure](#package-structure)
 - [Error Handling](#error-handling)
+    - [Exception Factory Methods](#exception-factory-methods)
+    - [Deprecated Exception Names and v2.0.0 Migration](#deprecated-exception-names-and-v200-migration)
 - [Testing](#testing)
-  - [Running the Tests](#running-the-tests)
-  - [Testing Your Own Application](#testing-your-own-application)
+    - [Running the Tests](#running-the-tests)
+    - [Testing Your Own Application](#testing-your-own-application)
 - [Local Development](#local-development)
 - [Requirements](#requirements)
 
@@ -28,7 +39,7 @@
 <a name="introduction"></a>
 ## Introduction
 
-Laravel GitHub is a Laravel package for connecting your application to a GitHub organisation through a GitHub App installation. It provides a straightforward way to browse repositories, search pull requests and retrieve individual pull request details without implementing GitHub App authentication yourself.
+Laravel GitHub is a Laravel package for connecting your application to a GitHub organisation through a GitHub App installation. It provides a straightforward way to browse repositories, list open pull requests, search pull requests and retrieve individual pull request details without implementing GitHub App authentication yourself.
 
 The package handles installation token generation, renewal and response caching, allowing your application to focus on how repository and pull request information is presented and used.
 
@@ -38,12 +49,48 @@ use Egough\LaravelGitHub\Facades\GitHub;
 // Browse repositories accessible to the installation.
 $repositories = GitHub::repositories();
 
-// Search for open pull requests by title.
-$results = GitHub::pullRequests('acme/backend', 'checkout', false, 1);
+// List open pull requests, including draft and review-request metadata.
+$openPulls = GitHub::openPullRequests()
+    ->repository('acme/backend')
+    ->get();
+
+// Search by title, including closed and merged pull requests.
+$results = GitHub::pullRequests()
+    ->repository('acme/backend')
+    ->search('checkout')
+    ->withClosed()
+    ->page(1)
+    ->get();
 
 // Retrieve an individual pull request.
 $pull = GitHub::pullRequest('acme/backend', 42);
 ```
+
+Existing direct calls remain supported:
+
+```php
+$results = GitHub::pullRequests('acme/backend', 'checkout', false, 1);
+$openPulls = GitHub::openPullRequests('acme/backend', 1);
+```
+
+The direct search above excludes closed PRs; add `->withClosed()` to a fluent search when you want to include closed and merged PRs.
+
+---
+
+<a name="changes-in-v104"></a>
+## Changes in v1.0.4
+
+Version **v1.0.4** adds the following changes to **v1.0.3**:
+
+- Immutable fluent queries are available through `pullRequests()` and `openPullRequests()`, with named setters and an explicit `get()` execution method.
+- `openPullRequests()` lists open pull requests with draft flags, requested-review status, creation/update timestamps and pagination.
+- Package internals are organised into authentication, resource, HTTP transport, exception and cache-key classes. `GitHubClient` remains the public entry point.
+- Fixed exception messages are owned by named factory methods on their exception classes.
+- Exception classes now live under `Egough\LaravelGitHub\Exceptions`. The previous `Egough\LaravelGitHub\GitHubUnavailable` and `Egough\LaravelGitHub\RepositoryUnavailable` names are **deprecated from v1.0.4**, but remain supported through Composer-loaded aliases throughout the remaining v1.x releases.
+
+Existing client construction, direct facade calls, named arguments, response shapes, configuration and caching behaviour remain supported. Chaining is additive in v1.0.4; applications do not need to migrate existing calls.
+
+**Breaking change planned for v2.0.0:** `src/Exceptions/aliases.php` and its Composer autoload registration will be removed. Applications must update their exception imports to `Egough\LaravelGitHub\Exceptions\GitHubUnavailable` and `Egough\LaravelGitHub\Exceptions\RepositoryUnavailable` before upgrading. See [Deprecated Exception Names and v2.0.0 Migration](#deprecated-exception-names-and-v200-migration).
 
 ---
 
@@ -196,7 +243,7 @@ How long repository lists are cached, in seconds. Defaults to `300` (five minute
 
 **`cache.pull_requests`**
 
-How long pull request searches and individual pull request details are cached, in seconds. Defaults to `60` (one minute).
+How long pull request searches, individual pull request details and open pull request pages are cached, in seconds. Defaults to `60` (one minute).
 
 ---
 
@@ -240,7 +287,154 @@ Private repositories are included when the GitHub App installation has access to
 <a name="pull-requests"></a>
 ## Pull Requests
 
-The package provides methods for searching pull requests within an accessible repository and retrieving a specific pull request by number.
+The package provides methods for listing open pull requests, searching pull requests within an accessible repository and retrieving a specific pull request by number.
+
+<a name="fluent-query-api"></a>
+### Fluent Query API
+
+From **v1.0.4**, calling `pullRequests()` or `openPullRequests()` without a repository returns a new query builder. Calling either method with a repository executes immediately and returns the existing result array.
+
+```php
+$results = GitHub::pullRequests()
+    ->repository('acme/backend')
+    ->search('checkout')
+    ->withClosed()
+    ->page(1)
+    ->get();
+
+$openPulls = GitHub::openPullRequests()
+    ->repository('acme/backend')
+    ->page(1)
+    ->get();
+```
+
+Builder creation and setters do not send HTTP requests. `get()` validates the query, then retrieves **one page** through the same resources, access checks, authentication and cache used by direct calls. Equivalent fluent and direct calls share cache entries.
+
+Search queries support:
+
+| Method | Purpose and Default |
+| --- | --- |
+| `repository(string $repository)` | Set the repository in `owner/repository` format. Required before `get()`. |
+| `search(string $search)` | Set the title search or exact PR number. Defaults to an empty search. |
+| `withClosed(bool $include = true)` | Include closed and merged PRs. Closed PRs are excluded unless enabled; `withClosed(false)` excludes them again. |
+| `page(int $page)` | Set the search page, from 1 to 34. Defaults to 1. |
+| `get()` | Execute and return the existing `data`, `next_page` and `incomplete` result array. |
+
+Open-list queries support `repository()`, `page()` and `get()`. Their page must be positive, with no search-specific upper limit. They return the existing `data` and `next_page` result array, including draft and review-request metadata. Drafts remain included, and these builders do not expose `search()` or `withClosed()`.
+
+All setters are optional except that a repository must be supplied before execution. `get()` throws `MissingRepository` for a missing or blank repository, and `InvalidPage` for a page outside the fluent query's bounds. Both exceptions live under `Egough\LaravelGitHub\Exceptions` and extend `InvalidArgumentException`. Validation happens before authentication or HTTP requests; building an invalid query alone does not throw.
+
+The fluent search page bounds do not change the existing direct search method's input-validation behaviour. Applications should continue validating input passed to direct calls.
+
+You can also initialise options with named arguments while omitting the repository:
+
+```php
+$query = GitHub::pullRequests(search: 'checkout', includeClosed: true, page: 2);
+$results = $query->repository('acme/backend')->get();
+
+$query = GitHub::openPullRequests(page: 2);
+$openPulls = $query->repository('acme/backend')->get();
+```
+
+The same fluent API is available on an injected `GitHubClient`. Individual PR lookups through `pullRequest()` and repository browsing through `repositories()` retain their existing APIs.
+
+<a name="reusing-queries"></a>
+### Reusing Queries
+
+Queries are immutable: each setter returns a new query without modifying its source. A base query can safely be reused for different searches or pages:
+
+```php
+$base = GitHub::pullRequests()->repository('acme/backend');
+$checkout = $base->search('checkout');
+
+$openCheckout = $checkout->get();
+$allCheckout = $checkout->withClosed()->get();
+$nextCheckoutPage = $checkout->page(2)->get();
+$otherSearch = $base->search('shipping')->get();
+```
+
+`$base` still has an empty search, and `$checkout` still excludes closed PRs and uses page 1. Each fresh facade call also starts with the defaults.
+
+Capture the returned builder when updating a variable:
+
+```php
+$query = GitHub::openPullRequests()->repository('acme/backend');
+$query = $query->page(2);
+$results = $query->get();
+```
+
+If a setter is repeated in a chain, its last value takes effect. `get()` does not advance the page or modify the builder; use the returned `next_page` value to construct the next query.
+
+<a name="listing-open-pull-requests"></a>
+### Listing Open Pull Requests
+
+Available from **v1.0.4**, `openPullRequests()` lists open pull requests in an accessible repository:
+
+```php
+$results = GitHub::openPullRequests(
+    repository: 'acme/backend',
+    page: 1,
+);
+```
+
+The equivalent fluent call is:
+
+```php
+$results = GitHub::openPullRequests()
+    ->repository('acme/backend')
+    ->get();
+```
+
+The `page` argument is optional and defaults to `1`. It must be greater than zero; invalid pages throw `Egough\LaravelGitHub\Exceptions\InvalidPage`, which extends PHP's `InvalidArgumentException`.
+
+```php
+[
+    'data' => [
+        [
+            'url' => 'https://github.com/acme/backend/pull/42',
+            'number' => 42,
+            'title' => 'Fix checkout',
+            'state' => 'open',
+            'draft' => false,
+            'waiting_for_review' => true,
+            'created_at' => '2026-10-20T12:00:00Z',
+            'updated_at' => '2026-10-21T12:00:00Z',
+        ],
+    ],
+    'next_page' => null,
+]
+```
+
+| Field | Description |
+| --- | --- |
+| `draft` | Whether the pull request is a draft. Drafts are included in the results. |
+| `waiting_for_review` | Whether GitHub currently lists any requested reviewers or requested teams. This does not mean that the PR has no approvals. |
+| `created_at` | Creation timestamp returned by GitHub. |
+| `updated_at` | Last update timestamp returned by GitHub. |
+
+Results are ordered by least recently updated first, with up to 100 pull requests per page. This method uses the repository pull request listing endpoint rather than search, so the search API's 1,000-result limit does not apply. Its response has `data` and `next_page`; it does not contain the search method's `incomplete` field.
+
+Pass `next_page` into the next call until it is `null`:
+
+```php
+$page = 1;
+
+do {
+    $results = GitHub::openPullRequests('acme/backend', $page);
+
+    foreach ($results['data'] as $pull) {
+        if ($pull['draft']) {
+            continue;
+        }
+
+        // Present or process this non-draft pull request.
+    }
+
+    $page = $results['next_page'];
+} while ($page !== null);
+```
+
+Filtering drafts, associating pull requests with projects or tickets, and deciding which users should see them remain application responsibilities. `pullRequests()` and `pullRequest()` retain their existing response fields; the additional metadata above is provided by `openPullRequests()`.
 
 <a name="searching-pull-requests"></a>
 ### Searching Pull Requests
@@ -286,7 +480,7 @@ The result contains the matching pull requests and pagination information:
 
 **`incomplete`** indicates that GitHub did not return a complete search result. When this is `true`, consider asking users to narrow their search.
 
-Results are ordered by most recently updated, with 30 results per page. GitHub search exposes a maximum of 1,000 results, so applications should validate page input and avoid unbounded searches.
+Results are ordered by most recently updated, with 30 results per page. GitHub search exposes a maximum of 1,000 results, so applications should validate page input and avoid unbounded searches. The fluent search builder enforces pages 1 to 34 at `get()`.
 
 <a name="finding-a-pull-request-by-number"></a>
 ### Finding a Pull Request by Number
@@ -380,6 +574,7 @@ The package uses Laravel's default cache store:
 | Repository lists | 300 seconds (five minutes) |
 | Pull request searches | 60 seconds (one minute) |
 | Individual pull request details | 60 seconds (one minute) |
+| Open pull request pages | 60 seconds (one minute) |
 | Installation access tokens | Until one minute before expiry |
 
 Cache keys are scoped to the configured connection settings. Because installation tokens are sensitive credentials, use a protected cache backend with appropriate access controls.
@@ -390,6 +585,44 @@ Requests use a three-second connection timeout and a ten-second overall timeout.
 
 ---
 
+<a name="package-structure"></a>
+## Package Structure
+
+From **v1.0.4**, the source is organised by responsibility:
+
+```text
+src/
+├── Auth/
+│   └── InstallationTokenManager.php
+├── Exceptions/
+│   ├── GitHubUnavailable.php
+│   ├── InvalidPage.php
+│   ├── MissingRepository.php
+│   ├── RepositoryUnavailable.php
+│   └── aliases.php
+├── Facades/
+│   └── GitHub.php
+├── Http/
+│   ├── AuthenticatedTransport.php
+│   └── RequestFactory.php
+├── Queries/
+│   ├── OpenPullRequestQuery.php
+│   └── PullRequestQuery.php
+├── Resources/
+│   ├── PullRequests.php
+│   └── Repositories.php
+├── Support/
+│   └── CacheKey.php
+├── GitHubClient.php
+└── GitHubServiceProvider.php
+```
+
+`InstallationTokenManager` handles JWT signing, installation tokens, expiry and invalidation. The immutable query builders collect fluent options and delegate execution to the resource classes, which handle repository access and pull request queries. The HTTP classes share request configuration, translate connection errors and handle authenticated requests with one token refresh after a `401`. `CacheKey` keeps connection-scoped cache keys consistent across these responsibilities.
+
+Applications should continue to use the facade or inject `GitHubClient`; they do not need to construct these internal collaborators. The existing `new GitHubClient($config)` constructor remains supported.
+
+---
+
 <a name="error-handling"></a>
 ## Error Handling
 
@@ -397,8 +630,8 @@ The package raises exceptions for connection, authentication and repository acce
 
 ```php
 use Egough\LaravelGitHub\Facades\GitHub;
-use Egough\LaravelGitHub\GitHubUnavailable;
-use Egough\LaravelGitHub\RepositoryUnavailable;
+use Egough\LaravelGitHub\Exceptions\GitHubUnavailable;
+use Egough\LaravelGitHub\Exceptions\RepositoryUnavailable;
 
 try {
     $pull = GitHub::pullRequest('acme/backend', 42);
@@ -414,10 +647,82 @@ try {
 | --- | --- |
 | `RepositoryUnavailable` | The requested repository is not available to the configured organisation and installation. |
 | `GitHubUnavailable` | A configuration, authentication or upstream GitHub request failed. |
+| `InvalidPage` | An open-list page is below 1, or a fluent search page is outside 1 to 34. Extends `InvalidArgumentException`. |
+| `MissingRepository` | A fluent query was executed without a non-blank repository. Extends `InvalidArgumentException`. |
 
 A missing **individual pull request** returns `null` rather than throwing `RepositoryUnavailable`.
 
 Upstream response bodies are not included in exception messages.
+
+<a name="exception-factory-methods"></a>
+### Exception Factory Methods
+
+Exception classes provide named static factories so each fixed error message is defined in one place:
+
+```php
+use Egough\LaravelGitHub\Exceptions\GitHubUnavailable;
+use Egough\LaravelGitHub\Exceptions\InvalidPage;
+use Egough\LaravelGitHub\Exceptions\MissingRepository;
+use Egough\LaravelGitHub\Exceptions\RepositoryUnavailable;
+
+throw GitHubUnavailable::notConfigured();
+throw RepositoryUnavailable::notAccessible();
+throw InvalidPage::mustBePositive();
+throw MissingRepository::required();
+```
+
+Each factory returns an exception instance; calling it alone does not throw. Package error messages retain their existing wording.
+
+| Factory | Condition |
+| --- | --- |
+| `GitHubUnavailable::notConfigured()` | Required connection settings are missing. |
+| `GitHubUnavailable::privateKeyUnavailable()` | The private key file cannot be read. |
+| `GitHubUnavailable::privateKeyInvalid()` | The private key cannot be parsed. |
+| `GitHubUnavailable::signingFailed()` | Signing the GitHub App JWT failed. |
+| `GitHubUnavailable::authenticationFailed()` | The installation token request failed or returned an invalid response. |
+| `GitHubUnavailable::connectionFailed()` | An HTTP request could not be sent successfully. |
+| `GitHubUnavailable::upstreamUnavailable()` | An authenticated GitHub request returned an unsuccessful response. |
+| `RepositoryUnavailable::notAccessible()` | The repository is outside the configured organisation or installation access. |
+| `InvalidPage::mustBePositive()` | An open-list or fluent search page is below 1. |
+| `InvalidPage::searchLimitExceeded()` | A fluent search page exceeds 34. |
+| `MissingRepository::required()` | A fluent query was executed without a non-blank repository. |
+
+The standard exception constructors remain available if your application needs to construct an exception with its own message.
+
+<a name="deprecated-exception-names-and-v200-migration"></a>
+### Deprecated Exception Names and v2.0.0 Migration
+
+The old root-level exception names are deprecated starting in **v1.0.4**:
+
+| Deprecated import | Replacement import |
+| --- | --- |
+| `Egough\LaravelGitHub\GitHubUnavailable` | `Egough\LaravelGitHub\Exceptions\GitHubUnavailable` |
+| `Egough\LaravelGitHub\RepositoryUnavailable` | `Egough\LaravelGitHub\Exceptions\RepositoryUnavailable` |
+
+In v1.0.4 and the remaining v1.x releases, Composer automatically loads `src/Exceptions/aliases.php`. It uses `class_alias()` so each old name and its replacement refer to the same exception class. Existing imports, exception construction and catch blocks continue to work during that period. The deprecation is documented; the aliases do not emit runtime deprecation warnings.
+
+**In v2.0.0, `aliases.php` and its Composer autoload registration will be removed. The old exception names will no longer be provided.** Update imports before upgrading:
+
+```diff
+-use Egough\LaravelGitHub\GitHubUnavailable;
+-use Egough\LaravelGitHub\RepositoryUnavailable;
++use Egough\LaravelGitHub\Exceptions\GitHubUnavailable;
++use Egough\LaravelGitHub\Exceptions\RepositoryUnavailable;
+```
+
+Catch blocks using these imported short names can stay as they are:
+
+```php
+try {
+    $pull = GitHub::pullRequest('acme/backend', 42);
+} catch (RepositoryUnavailable $exception) {
+    // Repository access failed.
+} catch (GitHubUnavailable $exception) {
+    // Configuration, authentication or an upstream request failed.
+}
+```
+
+Also update fully qualified exception references, PHPDoc types and exception class strings in tests or configuration that still use the deprecated paths. Existing `catch (\InvalidArgumentException $exception)` handlers catch both `InvalidPage` and `MissingRepository`; neither is a legacy alias.
 
 ### Validating Application Input
 
@@ -487,8 +792,9 @@ To use a local checkout of Laravel GitHub in another Laravel application, add a 
             "url": "../packages/laravel-github",
             "options": {
                 "symlink": true,
+                "reference": "config",
                 "versions": {
-                    "egough/laravel-github": "^1.0.0"
+                    "egough/laravel-github": "1.0.4"
                 }
             }
         }
@@ -499,12 +805,12 @@ To use a local checkout of Laravel GitHub in another Laravel application, add a 
 Then require the package:
 
 ```bash
-composer require egough/laravel-github:^1.0.0
+composer require egough/laravel-github:^1.0.4
 ```
 
 Adjust the path to match your local directory layout. With symlinking enabled, PHP source changes in the package checkout become available to the consuming application immediately.
 
-Rerun Composer when package metadata or dependencies change. Before using the application in CI or production, replace the local path dependency with a published release or an accessible Git repository.
+The local version override is a concrete version (`1.0.4`), not a version constraint. The `reference: config` setting lets Composer detect changes to the package manifest even before a commit is made. Rerun `composer update egough/laravel-github` when package metadata or dependencies change so the consuming application registers changes such as the exception alias autoload file. Before using the application in CI or production, replace the local path dependency with a published release or an accessible Git repository.
 
 ---
 
